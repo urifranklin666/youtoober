@@ -49,9 +49,9 @@ Library authentication and playback cookies are separate. Browser-session expiry
 
 ## Terminal controls
 
-- Type a song query and press Enter, or paste a YouTube song/playlist URL.
-- Use **Playlists**, **Albums**, **Liked songs**, **Queue**, or **Search albums** to change views.
-- Arrow keys select a result; Enter opens a collection or plays a song.
+- Select **Search songs**, **Search videos**, or **Search albums**, type a query, and press Enter. The selected search type stays active for subsequent searches. You can also paste a YouTube song/video/playlist URL.
+- Use **Playlists**, **Albums**, **Liked songs**, or **Queue** to change library views.
+- Arrow keys select a result; Enter opens a collection or plays the selected song or video. Video results are labeled **VIDEO**.
 - **Play all** plays a collection; **Add** / `a` appends the selection to the queue.
 - **Remove**, **Move up/down**, and **Clear queue** edit the queue.
 - Space toggles playback, `n` skips, `/` focuses search, and `q` closes the UI.
@@ -64,6 +64,7 @@ The queue and playback settings are saved atomically. A service restart restores
 ```sh
 ytm search 'artist song'
 ytm search --filter albums 'album name'
+ytm search --filter videos 'artist official music video'
 ytm library playlists
 ytm library albums
 ytm library songs
@@ -92,6 +93,8 @@ ytm clear
 ytm status
 ytm service stop
 ```
+
+Video search uses the YouTube Music video catalog. Playing or queueing a result preserves its exact video ID. The terminal player outputs its audio; enable **Music video** in the OBS source properties to show its video in the widget.
 
 Queue indices are zero-based. Commands return JSON. `play` appends its selection and begins playing there; `enqueue` appends without interrupting playback. Resolution happens just before each song, with one retry. The resolver prefers HLS audio, which passed the live playback check on this machine; only audio is played. A failure preserves the queue and waits for Resume/retry or Next instead of repeatedly skipping songs.
 

@@ -80,7 +80,7 @@ def build_parser():
     p.add_argument('action', nargs='?', default='start', choices=['start','stop','status','run'])
     p = sub.add_parser('search')
     p.add_argument('query', nargs='+')
-    p.add_argument('--filter', choices=['songs','albums'], default='songs')
+    p.add_argument('--filter', choices=['songs','albums','videos'], default='songs')
     p = sub.add_parser('library')
     p.add_argument('kind', nargs='?', default='playlists', choices=['playlists','albums','songs'])
     for name in ('playlist','album'):

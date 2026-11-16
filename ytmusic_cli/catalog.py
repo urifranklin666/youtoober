@@ -62,11 +62,16 @@ class Catalog:
 
     async def call(self, method, params):
         def fetch():
+            search_filter = params.get('filter', 'songs')
+            if method == 'search' and search_filter not in ('songs', 'albums', 'videos'):
+                raise ValueError('Search filter must be songs, albums, or videos')
             authenticated = method in ('library', 'liked')
             api = self.api(authenticated)
             if method == 'search':
-                result = api.search(params['query'], filter=params.get('filter', 'songs'), limit=50)
-                return [normalize(r, 'album' if r.get('resultType') == 'album' else 'song') for r in result]
+                result = api.search(params['query'], filter=search_filter, limit=50)
+                fallback = {'albums': 'album', 'videos': 'video'}.get(search_filter, 'song')
+                kinds = {'album': 'album', 'video': 'video', 'song': 'song'}
+                return [normalize(r, kinds.get(r.get('resultType'), fallback)) for r in result]
             if method == 'library':
                 kind = params.get('kind', 'playlists')
                 if kind == 'albums':
@@ -105,7 +110,8 @@ class Catalog:
                 track = normalize({'videoId': video, 'title': row.get('title', video),
                                    'artists': [{'name': row.get('artist', '')}],
                                    'album': row.get('album', ''), 'duration': row.get('duration', 0),
-                                   'thumbnails': [{'url': row.get('thumbnail', '')}]})
+                                   'thumbnails': [{'url': row.get('thumbnail', '')}]},
+                                  kind='video' if row.get('kind') == 'video' else 'song')
                 result.append(track)
             return result
         if params.get('kind') in ('playlist', 'album'):

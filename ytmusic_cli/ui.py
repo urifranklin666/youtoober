@@ -27,17 +27,20 @@ class MusicApp(App):
         super().__init__()
         self.rows = []
         self.view = 'search'
+        self.search_filter = 'songs'
         self.state = {}
         self.subscription = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder='Search songs, or paste a YouTube song/playlist URL', id='search')
+        yield Input(placeholder='Search songs, or paste a YouTube song/video/playlist URL', id='search')
         with Horizontal(id='navigation'):
             yield Button('Playlists', id='playlists')
             yield Button('Albums', id='albums')
             yield Button('Liked songs', id='liked')
             yield Button('Queue', id='queue')
+            yield Button('Search songs', id='search-songs', variant='primary')
+            yield Button('Search videos', id='search-videos')
             yield Button('Search albums', id='search-albums')
         yield ListView(id='results')
         with Horizontal(id='queue-actions'):
@@ -93,7 +96,7 @@ class MusicApp(App):
         self.rows = rows
         self.view = view
         for row in rows:
-            text = row.get('title', 'Untitled')
+            text = ('VIDEO · ' if row.get('kind') == 'video' else '') + row.get('title', 'Untitled')
             if row.get('artist'):
                 text += ' — ' + row['artist']
             await widget.append(ListItem(Label(text, markup=False)))
@@ -104,7 +107,7 @@ class MusicApp(App):
     def selected(self):
         index = self.query_one('#results', ListView).index
         if index is None or index >= len(self.rows):
-            raise ValueError('Select a song first')
+            raise ValueError('Select a song or video first')
         return index, self.rows[index]
 
     async def perform(self, method, params=None):
@@ -114,16 +117,31 @@ class MusicApp(App):
             self.notify(str(error), severity='error', timeout=8)
             return None
 
-    async def on_input_submitted(self, event):
+    def start_search(self, kind, query=None, play_link=False):
+        self.search_filter = kind
+        field = self.query_one('#search', Input)
+        field.placeholder = f'Search {kind}, or paste a YouTube link'
+        for value in ('songs', 'videos', 'albums'):
+            self.query_one(f'#search-{value}', Button).variant = 'primary' if value == kind else 'default'
+        query = (field.value if query is None else query).strip()
+        if not query or (query.startswith('https://') and not play_link):
+            field.focus()
+            return
+
         async def search():
-            self.query_one('#status', Static).update('Searching…')
-            if event.value.startswith('https://'):
-                await self.perform('play', {'url': event.value})
+            self.query_one('#status', Static).update(f'Searching {kind}…')
+            if query.startswith('https://'):
+                await self.perform('play', {'url': query})
             else:
-                rows = await self.perform('search', {'query': event.value, 'filter': 'songs'})
+                rows = await self.perform('search', {'query': query, 'filter': kind})
                 if rows is not None:
                     await self.show(rows, 'search')
+                    if not rows:
+                        self.notify(f'No {kind} found')
         self.run_worker(search(), group='catalog', exclusive=True)
+
+    async def on_input_submitted(self, event):
+        self.start_search(self.search_filter, event.value, play_link=True)
 
     async def on_list_view_selected(self, event):
         try:
@@ -148,12 +166,12 @@ class MusicApp(App):
     async def on_button_pressed(self, event):
         method = event.button.id
         try:
-            if method in ('playlists','albums','liked','search-albums'):
+            if method in ('search-songs','search-videos','search-albums'):
+                self.start_search(method.removeprefix('search-'))
+            elif method in ('playlists','albums','liked'):
                 async def browse():
                     if method == 'liked':
                         rows = await self.perform('liked')
-                    elif method == 'search-albums':
-                        rows = await self.perform('search', {'query': self.query_one('#search', Input).value, 'filter':'albums'})
                     else:
                         rows = await self.perform('library', {'kind': method})
                     if rows is not None:
