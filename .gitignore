@@ -1,0 +1,29 @@
+# Local dependencies and generated output
+.venv/
+build/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Authentication, local settings, sessions, and logs
+.env
+.env.*
+!.env.example
+browser.json
+oauth.json
+cookies*.txt
+*headers*.txt
+playback.json
+session.json
+*.log
+*.pem
+*.key
+isthisright*
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
