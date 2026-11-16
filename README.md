@@ -81,13 +81,24 @@ Queue indices are zero-based. Commands return JSON. `play` appends its selection
 
 Restart OBS after installation. Add **YouTube Music Now Playing** as a source, and open **Docks → YouTube Music**.
 
-The native source is 360 × 480 with transparency and a large square artwork tile above the playback information. Its properties control font family, accent color, background opacity, artwork, progress, and visibility while paused. Its entrance slides up, fades in, and gently scales into place, with delayed text and a soft artwork light sweep. The animation replays when the source becomes visible or the song changes; source properties can disable it or adjust its duration. Scale it using OBS transforms. It hides on stop, loading, errors, or disconnection. No Browser Source or web server is involved.
+The native source is **360 × 520**, with a large square artwork tile above two title lines, artist, progress, and elapsed/remaining timestamps. Without artwork, the compact layout is 360 × 224. Scale it using OBS transforms; existing scenes may need their source transform adjusted after this update.
+
+Source properties include:
+
+- **Match accent and glow to album artwork**: chooses a readable color from the cover, with your manual accent as the fallback for missing or grayscale artwork.
+- **Display mode**: always visible while playing (default), or briefly on song changes. Brief mode defaults to 12 seconds and fades out; the duration is adjustable from 5–60 seconds.
+- **Replay entrance / preview**: replays the entrance using the current track, or shows an eight-second sample if no player is connected. It never starts playback, changes the queue, or contacts YouTube.
+- Font, manual accent, background opacity, artwork visibility, progress, timestamps, pause visibility, animation enable/disable, and entrance duration.
+
+First appearance uses the slide/fade/scale entrance; song changes crossfade the artwork, text, and matching colors over 550 ms. The tile has rounded framing, a soft shadow, and a faint highlight. Titles wrap to two lines and scroll slowly, with reading pauses, only when the full title needs more space. Short titles stay still. Timestamps include hours when needed; unknown durations show an em dash for remaining time.
+
+The overlay retains the previous visual briefly during song loading so the next song can crossfade smoothly. Stops, errors, and disconnections hide it. No Browser Source or web server is involved.
 
 The dock has **Start player**, previous/pause/resume/next/stop, seeking, volume, shuffle/repeat, and queue editing. Double-click a queued track to play it. Multiple sources share one connection. The source and dock reconnect automatically when the service restarts.
 
 Audio uses normal OBS desktop or application capture. The plugin does not capture or duplicate audio. Add/select the appropriate audio capture source in your scene and check the mixer before recording. Closing OBS or switching scenes leaves playback running.
 
-Native render preview: `build/overlay-preview.png` (generated locally by the smoke test; build outputs are not committed).
+Local previews: `build/overlay-polished.webp` (entrance), `build/overlay-crossfade.webp` (song change), and `build/overlay-polished-on-dark.png` (layout). These generated files are not committed.
 
 ## Installation from a checkout
 
@@ -126,11 +137,12 @@ Uninstall installed components with `.venv/bin/python scripts/uninstall.py`; cre
 .venv/bin/python -m unittest discover -s tests -v
 cmake -S obs -B build/obs
 cmake --build build/obs --parallel
+ctest --test-dir build/obs --output-on-failure
 QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion \
   build/obs/ytmusic-obs-smoke "$PWD/build/obs/ytmusic-obs.so"
 ```
 
-Tests cover queue editing, shuffle/repeat, EOF advancement, restoration, failure recovery, cancellation, real mpv IPC with silent output, simultaneous service clients, state subscriptions, protocol errors, permissions, shutdown, and the headless Textual UI. The native smoke harness loads the plugin into libobs and checks source properties and dock lifecycle.
+Tests cover queue editing, shuffle/repeat, EOF advancement, restoration, failure recovery, cancellation, real mpv IPC with silent output, simultaneous service clients, state subscriptions, protocol errors, permissions, shutdown, and the headless Textual UI. The deterministic Qt renderer test covers palette fallback, crossfades, loading/disconnection behavior, two-line title overflow, timestamp formatting, timed visibility, compact layout, and offline preview. The native smoke harness loads the plugin into libobs and checks source properties and dock lifecycle. Pass `preview` after its output PNG argument to exercise the actual properties preview button with no service connected.
 
 To generate a rendered native preview on a Wayland desktop, use a separate runtime directory so the harness cannot collide with the real player socket:
 

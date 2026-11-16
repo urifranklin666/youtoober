@@ -26,8 +26,10 @@ int main(int argc,char **argv) {
         obs_set_nix_platform_display(display);
     }
     if(!obs_startup("en-US",nullptr,nullptr)) return 1;
+    const bool offlinePreview = argc>3 && QString(argv[3])=="preview";
     QLocalServer server;
     if(argc>2) {
+        if (!offlinePreview) {
         if(!server.listen(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation)+"/ytmusic-cli-"+QString::number(getuid())+".sock")) return 6;
         QObject::connect(&server,&QLocalServer::newConnection,&server,[&server](){
             auto *socket=server.nextPendingConnection();
@@ -38,8 +40,9 @@ int main(int argc,char **argv) {
                 socket->write(QJsonDocument(QJsonObject{{"event","state"},{"state",state}}).toJson(QJsonDocument::Compact)+"\n");
             });
         });
+        }
         obs_video_info video={}; video.graphics_module="libobs-opengl"; video.fps_num=30; video.fps_den=1;
-        video.base_width=video.output_width=360; video.base_height=video.output_height=480;
+        video.base_width=video.output_width=360; video.base_height=video.output_height=520;
         video.output_format=VIDEO_FORMAT_RGBA; video.colorspace=VIDEO_CS_709; video.range=VIDEO_RANGE_FULL;
         if(obs_reset_video(&video)!=OBS_VIDEO_SUCCESS) return 7;
     }
@@ -47,9 +50,10 @@ int main(int argc,char **argv) {
     if(obs_open_module(&module,argv[1],".")!=MODULE_SUCCESS || !obs_init_module(module)) return 2;
     auto *settings=obs_data_create();
     auto *source=obs_source_create("ytmusic_now_playing","Smoke test",settings,nullptr);
-    if(!source || obs_source_get_width(source)!=360 || obs_source_get_height(source)!=480 || !dock) return 3;
+    if(!source || obs_source_get_width(source)!=360 || obs_source_get_height(source)!=520 || !dock) return 3;
     auto *props=obs_source_properties(source);
-    if(!obs_properties_get(props,"paused") || !obs_properties_get(props,"accent")) return 4;
+    if(!obs_properties_get(props,"paused") || !obs_properties_get(props,"accent") || !obs_properties_get(props,"preview") || !obs_properties_get(props,"display_mode")) return 4;
+    if (offlinePreview) obs_property_button_clicked(obs_properties_get(props,"preview"),nullptr);
     obs_properties_destroy(props);
     obs_source_update(source,settings);
     obs_source_inc_showing(source);
@@ -62,16 +66,16 @@ int main(int argc,char **argv) {
         app.processEvents();
         obs_enter_graphics();
         auto *target=gs_texrender_create(GS_RGBA,GS_ZS_NONE);
-        if(!gs_texrender_begin(target,360,480)) return 8;
+        if(!gs_texrender_begin(target,360,520)) return 8;
         vec4 clear={}; gs_clear(GS_CLEAR_COLOR,&clear,0,0);
-        gs_ortho(0,360,0,480,-100,100);
+        gs_ortho(0,360,0,520,-100,100);
         obs_source_video_render(source);
         gs_texrender_end(target);
-        auto *stage=gs_stagesurface_create(360,480,GS_RGBA);
+        auto *stage=gs_stagesurface_create(360,520,GS_RGBA);
         gs_stage_texture(stage,gs_texrender_get_texture(target));
         uint8_t *pixels=nullptr; uint32_t stride=0;
         if(!gs_stagesurface_map(stage,&pixels,&stride)) return 9;
-        QImage image(pixels,360,480,stride,QImage::Format_RGBA8888_Premultiplied);
+        QImage image(pixels,360,520,stride,QImage::Format_RGBA8888_Premultiplied);
         QString filename = frame == 12 ? QString(argv[2]) : QString(argv[2])+QString("-%1.png").arg(frame,2,10,QChar('0'));
         bool saved=image.save(filename);
         if (frame == 12) {

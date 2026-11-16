@@ -1,3 +1,5 @@
+#include "overlay.hpp"
+#include <chrono>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <graphics/graphics.h>
@@ -12,10 +14,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QPainter>
-#include <QPainterPath>
-#include <QLinearGradient>
-#include <cmath>
 #include <QStandardPaths>
 #include <QListWidget>
 #include <QSlider>
@@ -127,34 +125,34 @@ static void connectService() {
     subscription->connectToServer(socketPath());
 }
 
+static double clockSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 struct Source {
     gs_texture_t *texture = nullptr;
     std::mutex mutex;
-    QString font = "Sans";
-    QColor accent = QColor("#ff657c");
-    int opacity = 94;
-    bool artwork = true;
-    bool progress = true;
-    bool paused = false;
-    bool animated = true;
-    int entranceMs = 850;
-    bool visible = false;
-    QString trackKey;
-    QElapsedTimer entrance;
+    overlay::Options options;
+    overlay::Card card;
 };
 static const char *sourceName(void*) { return "YouTube Music Now Playing"; }
 static void update(void *data, obs_data_t *settings) {
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    source->font = QString::fromUtf8(obs_data_get_string(settings,"font"));
+    auto &o = source->options;
+    o.font = QString::fromUtf8(obs_data_get_string(settings,"font"));
     uint32_t color = uint32_t(obs_data_get_int(settings,"accent"));
-    source->accent = QColor(color & 255,(color >> 8) & 255,(color >> 16) & 255);
-    source->opacity = int(obs_data_get_int(settings,"opacity"));
-    source->artwork = obs_data_get_bool(settings,"artwork");
-    source->progress = obs_data_get_bool(settings,"progress");
-    source->paused = obs_data_get_bool(settings,"paused");
-    source->animated = obs_data_get_bool(settings,"animated");
-    source->entranceMs = qBound(300,int(obs_data_get_int(settings,"entrance_ms")),1500);
+    o.accent = QColor(color & 255,(color >> 8) & 255,(color >> 16) & 255);
+    o.opacity = int(obs_data_get_int(settings,"opacity"));
+    o.artwork = obs_data_get_bool(settings,"artwork");
+    o.progress = obs_data_get_bool(settings,"progress");
+    o.timestamps = obs_data_get_bool(settings,"timestamps");
+    o.paused = obs_data_get_bool(settings,"paused");
+    o.animated = obs_data_get_bool(settings,"animated");
+    o.adaptive = obs_data_get_bool(settings,"adaptive");
+    o.briefly = QString::fromUtf8(obs_data_get_string(settings,"display_mode")) == "brief";
+    o.duration = qBound(300,int(obs_data_get_int(settings,"entrance_ms")),1500)/1000.0;
+    o.displaySeconds = qBound(5,int(obs_data_get_int(settings,"display_seconds")),60);
+    source->card.show();
 }
 static void defaults(obs_data_t *settings) {
     obs_data_set_default_string(settings,"font","Sans");
@@ -165,8 +163,12 @@ static void defaults(obs_data_t *settings) {
     obs_data_set_default_bool(settings,"paused",false);
     obs_data_set_default_bool(settings,"animated",true);
     obs_data_set_default_int(settings,"entrance_ms",850);
+    obs_data_set_default_bool(settings,"adaptive",true);
+    obs_data_set_default_bool(settings,"timestamps",true);
+    obs_data_set_default_string(settings,"display_mode","always");
+    obs_data_set_default_int(settings,"display_seconds",12);
 }
-static obs_properties_t *properties(void*) {
+static obs_properties_t *properties(void *sourceData) {
     auto *props = obs_properties_create();
     obs_properties_add_text(props,"font","Font family",OBS_TEXT_DEFAULT);
     obs_properties_add_color(props,"accent","Accent color");
@@ -174,8 +176,21 @@ static obs_properties_t *properties(void*) {
     obs_properties_add_bool(props,"artwork","Show artwork");
     obs_properties_add_bool(props,"progress","Show progress");
     obs_properties_add_bool(props,"paused","Keep visible while paused");
-    obs_properties_add_bool(props,"animated","Animate entrance and song changes");
+    obs_properties_add_bool(props,"animated","Animate entrance and track crossfades");
     obs_properties_add_int_slider(props,"entrance_ms","Entrance duration (ms)",300,1500,50);
+    obs_properties_add_bool(props,"adaptive","Match accent and glow to album artwork");
+    obs_properties_add_bool(props,"timestamps","Show elapsed and remaining time");
+    auto *mode = obs_properties_add_list(props,"display_mode","Display mode",OBS_COMBO_TYPE_LIST,OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(mode,"Always visible while playing","always");
+    obs_property_list_add_string(mode,"Briefly on each song change","brief");
+    obs_properties_add_int_slider(props,"display_seconds","Song-change display duration (seconds)",5,60,1);
+    obs_properties_add_button2(props,"preview","Replay entrance / preview",[](obs_properties_t*,obs_property_t*,void *data){
+        if (!data) return false;
+        auto *source = static_cast<Source*>(data);
+        std::lock_guard<std::mutex> lock(source->mutex);
+        source->card.preview(clockSeconds());
+        return false;
+    },sourceData);
     return props;
 }
 static void *create(obs_data_t *settings, obs_source_t*) {
@@ -192,121 +207,36 @@ static void destroy(void *data) {
     }
     delete source;
 }
-static constexpr uint32_t CARD_WIDTH = 360;
-static constexpr uint32_t CARD_HEIGHT = 480;
-static uint32_t width(void*) { return CARD_WIDTH; }
+static uint32_t width(void*) { return overlay::WIDTH; }
 static uint32_t height(void *data) {
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    return source->artwork ? CARD_HEIGHT : 180;
+    return source->options.artwork ? overlay::HEIGHT : overlay::COMPACT_HEIGHT;
 }
 static void sourceShown(void *data) {
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    source->visible = false;
-}
-static double smooth(double t) {
-    t = qBound(0.0,t,1.0);
-    return t*t*(3.0-2.0*t);
+    source->card.show();
 }
 static void render(void *data, gs_effect_t*) {
     Shared snapshot;
     { std::lock_guard<std::mutex> lock(guard); snapshot = shared; }
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    QString status = snapshot.state["status"].toString();
-    if (!snapshot.connected || (status != "Playing" && !(status == "Paused" && source->paused))) {
-        source->visible = false;
-        return;
-    }
-    auto track = snapshot.state["track"].toObject();
-    if (track.isEmpty()) { source->visible = false; return; }
-    const QString key = track["id"].toString(track["videoId"].toString(track["url"].toString(track["title"].toString()+track["artist"].toString())));
-    if (!source->visible || source->trackKey != key) {
-        source->entrance.start();
-        source->trackKey = key;
-        source->visible = true;
-    }
-    const double t = source->animated ? qBound(0.0,double(source->entrance.elapsed())/source->entranceMs,1.0) : 1.0;
-    const double ease = 1.0-std::pow(1.0-t,4.0);
-    const double fade = smooth(t/0.42);
-    const double back = 1.0+1.7*std::pow(t-1.0,3.0)+0.7*std::pow(t-1.0,2.0);
-    const double scale = 0.94+0.06*back;
-    const uint32_t cardHeight = source->artwork ? CARD_HEIGHT : 180;
-    QImage image(CARD_WIDTH,cardHeight,QImage::Format_RGBA8888_Premultiplied);
-    image.fill(Qt::transparent);
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.setOpacity(fade);
-    painter.translate(CARD_WIDTH/2.0,cardHeight/2.0+28.0*(1.0-ease));
-    painter.scale(scale,scale);
-    painter.translate(-double(CARD_WIDTH)/2.0,-double(cardHeight)/2.0);
-    painter.setBrush(QColor(22,23,29,int(255*source->opacity/100.0)));
-    painter.setPen(QColor(255,255,255,28));
-    painter.drawRoundedRect(16,16,CARD_WIDTH-32,cardHeight-32,20,20);
-    const int left = 40;
-    const int contentWidth = CARD_WIDTH - 80;
-    const int infoTop = source->artwork ? 332 : 48;
-    if (source->artwork) {
-        const QRect tile(left,32,contentWidth,contentWidth);
-        QPainterPath clip;
-        clip.addRoundedRect(tile,14,14);
-        painter.save();
-        painter.setClipPath(clip);
-        painter.fillRect(tile,source->accent.darker(180));
-        if (!snapshot.artwork.isNull()) {
-            const auto &art = snapshot.artwork;
-            const int side = qMin(art.width(),art.height());
-            const QRect crop((art.width()-side)/2,(art.height()-side)/2,side,side);
-            painter.drawImage(tile,art,crop);
-        } else {
-            painter.setPen(Qt::white);
-            painter.setFont(QFont(source->font,64));
-            painter.drawText(tile,Qt::AlignCenter,QString::fromUtf8("♫"));
-        }
-        // A single soft light sweep travels over the artwork during the entrance.
-        if (t > 0.08 && t < 0.92) {
-            const double sweep = (t-0.08)/0.84;
-            const double x = left-160+(contentWidth+320)*sweep;
-            QLinearGradient light(x-95,32,x+95,32+contentWidth);
-            light.setColorAt(0,QColor(255,255,255,0));
-            light.setColorAt(0.5,QColor(255,255,255,int(38*std::sin(sweep*3.141592653589793))));
-            light.setColorAt(1,QColor(255,255,255,0));
-            painter.fillRect(tile,light);
-        }
-        painter.restore();
-    }
-    painter.save();
-    painter.setOpacity(fade*smooth((t-0.12)/0.55));
-    painter.translate(0,10.0*(1.0-smooth((t-0.12)/0.7)));
-    painter.setPen(source->accent);
-    painter.setFont(QFont(source->font,9,QFont::Bold));
-    painter.drawText(left,infoTop,status == "Playing" ? "NOW PLAYING" : "PAUSED");
-    painter.setPen(Qt::white); painter.setFont(QFont(source->font,16,QFont::Bold));
-    painter.drawText(QRect(left,infoTop+14,contentWidth,30),Qt::AlignLeft,painter.fontMetrics().elidedText(track["title"].toString(),Qt::ElideRight,contentWidth));
-    painter.setFont(QFont(source->font,11)); painter.setPen(QColor("#b5b5c0"));
-    painter.drawText(QRect(left,infoTop+54,contentWidth,25),Qt::AlignLeft,painter.fontMetrics().elidedText(track["artist"].toString(),Qt::ElideRight,contentWidth));
-    double duration = snapshot.state["duration"].toDouble();
-    if (source->progress && duration > 0) {
-        painter.setPen(Qt::NoPen); painter.setBrush(QColor(255,255,255,30));
-        painter.drawRect(QRectF(left,infoTop+100,contentWidth,3)); painter.setBrush(source->accent);
-        painter.drawRect(QRectF(left,infoTop+100,contentWidth*qBound(0.0,snapshot.state["position"].toDouble()/duration,1.0)*smooth((t-0.25)/0.75),3));
-    }
-    painter.restore();
-    painter.end();
+    const QImage image = source->card.frame(snapshot.state,snapshot.artwork,snapshot.connected,source->options,clockSeconds());
+    const uint32_t cardHeight = image.height();
     if (source->texture && gs_texture_get_height(source->texture) != cardHeight) {
         gs_texture_destroy(source->texture);
         source->texture = nullptr;
     }
-    if (!source->texture) source->texture = gs_texture_create(CARD_WIDTH,cardHeight,GS_RGBA,1,nullptr,GS_DYNAMIC);
+    if (!source->texture) source->texture = gs_texture_create(overlay::WIDTH,cardHeight,GS_RGBA,1,nullptr,GS_DYNAMIC);
     if (!source->texture) return;
     gs_texture_set_image(source->texture,image.constBits(),image.bytesPerLine(),false);
     auto *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
     gs_effect_set_texture(gs_effect_get_param_by_name(effect,"image"),source->texture);
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE,GS_BLEND_INVSRCALPHA);
-    while (gs_effect_loop(effect,"Draw")) gs_draw_sprite(source->texture,0,CARD_WIDTH,cardHeight);
+    while (gs_effect_loop(effect,"Draw")) gs_draw_sprite(source->texture,0,overlay::WIDTH,cardHeight);
     gs_blend_state_pop();
 }
 
