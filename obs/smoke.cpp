@@ -13,12 +13,28 @@
 #include <QImage>
 #include <QBuffer>
 #include <QPainter>
+#include <QPalette>
+#include <QJsonArray>
 #include <unistd.h>
 static QWidget *dock = nullptr;
 extern "C" bool obs_frontend_add_dock_by_id(const char*,const char*,void *widget) { dock=static_cast<QWidget*>(widget); return true; }
 extern "C" void obs_frontend_remove_dock(const char*) { delete dock; dock=nullptr; }
 int main(int argc,char **argv) {
     QApplication app(argc,argv);
+    if (argc>4) {
+        // Documentation captures use a neutral dark palette, independent of desktop settings.
+        QPalette palette;
+        palette.setColor(QPalette::Window,QColor("#20232b"));
+        palette.setColor(QPalette::WindowText,QColor("#ececf2"));
+        palette.setColor(QPalette::Base,QColor("#15171e"));
+        palette.setColor(QPalette::AlternateBase,QColor("#262933"));
+        palette.setColor(QPalette::Text,QColor("#ececf2"));
+        palette.setColor(QPalette::Button,QColor("#333641"));
+        palette.setColor(QPalette::ButtonText,QColor("#ececf2"));
+        palette.setColor(QPalette::Highlight,QColor("#a74561"));
+        palette.setColor(QPalette::HighlightedText,Qt::white);
+        app.setPalette(palette);
+    }
     if(argc<2) return 1;
     const bool simulateVideo = argc>3 && QString(argv[3])=="video";
     const int frameHeight = simulateVideo ? 398 : 520;
@@ -49,7 +65,11 @@ int main(int argc,char **argv) {
                     return;
                 }
                 QJsonObject track{{"id","smoke-track"},{"title","Midnight in Motion"},{"artist","The Night Session"}};
-                QJsonObject state{{"status","Playing"},{"track",track},{"duration",240},{"position",87},{"volume",65},{"repeat","off"}};
+                QJsonArray queue{track,QJsonObject{{"title","Blue Hour"},{"artist","Neon Atlas"}},
+                    QJsonObject{{"title","Parallel Lines"},{"artist","Northbound"}},
+                    QJsonObject{{"title","Afterglow"},{"artist","The Night Session"}},
+                    QJsonObject{{"title","Homeward"},{"artist","Sunday Signals"}}};
+                QJsonObject state{{"queue",queue},{"status","Playing"},{"track",track},{"duration",240},{"position",87},{"volume",65},{"repeat","off"}};
                 socket->write(QJsonDocument(QJsonObject{{"event","state"},{"state",state}}).toJson(QJsonDocument::Compact)+"\n");
             });
         });
@@ -106,6 +126,13 @@ int main(int argc,char **argv) {
         }
     }
     if (simulateVideo && videoFrames==0) return 12;
+    if (argc>4) {
+        dock->resize(680,620);
+        dock->ensurePolished();
+        dock->show();
+        app.processEvents();
+        if (!dock->grab().save(argv[4])) return 13;
+    }
     obs_set_output_source(0,nullptr);
     obs_source_dec_showing(source);
     obs_source_release(source);

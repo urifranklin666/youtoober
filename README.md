@@ -4,6 +4,24 @@ YouTube Music terminal player + native OBS plugin.
 
 Play YouTube Music without keeping a browser page open. `ytm` opens a keyboard-driven terminal browser; individual commands and the OBS dock control the same background player. Closing either interface keeps playback running.
 
+## Screenshots
+
+Captured from the real terminal interface, native widget renderer, and OBS control dock using synthetic demo tracks. The artwork and video test frames are generated locally; no signed-in account or private library is shown.
+
+**Terminal player** — browse music, edit the queue, and control playback.
+
+![YouToober terminal interface with a sample queue and playback controls](docs/screenshots/terminal-interface.png)
+
+| Album-art widget | Video widget |
+| :---: | :---: |
+| ![Album-art mode with adaptive colors, a two-line title, progress, and timestamps](docs/screenshots/widget-artwork.png) | ![Video mode with a generated test frame in the 16:9 tile above playback information](docs/screenshots/widget-video.png) |
+
+**Native OBS controls** — the playback dock with a sample queue and silent video connected.
+
+![Native OBS playback dock showing transport, seeking, volume, repeat, and queue controls](docs/screenshots/obs-controls.png)
+
+Capture notes and reproduction commands are in [docs/screenshots](docs/screenshots/README.md).
+
 ## Getting started
 
 Run:
@@ -110,7 +128,7 @@ The dock has **Start player**, previous/pause/resume/next/stop, seeking, volume,
 
 Audio uses normal OBS desktop or application capture. The plugin does not capture or duplicate audio. Add/select the appropriate audio capture source in your scene and check the mixer before recording. Closing OBS or switching scenes leaves playback running.
 
-Local previews: `build/overlay-polished.webp` (entrance), `build/overlay-crossfade.webp` (song change), and `build/overlay-polished-on-dark.png` (layout). These generated files are not committed.
+Local previews: `build/overlay-polished.webp` (entrance), `build/overlay-crossfade.webp` (song change), and `build/overlay-polished-on-dark.png` (layout). These raw generated files are not committed; the curated screenshots above are stored in `docs/screenshots/`.
 
 ## Installation from a checkout
 
