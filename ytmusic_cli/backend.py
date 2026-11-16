@@ -71,7 +71,7 @@ class Backend:
         finally:
             self.pending.pop(identity, None)
 
-    async def resolve(self, track):
+    async def resolve(self, track, video=False):
         options = []
         settings = CONFIG / 'playback.json'
         if settings.exists():
@@ -84,7 +84,8 @@ class Backend:
             process = await asyncio.create_subprocess_exec(
                 'yt-dlp', '--ignore-config', '--no-playlist', '--no-warnings', '--skip-download',
                 '--dump-single-json', '--extractor-args', 'youtube:player-client=default,web_safari',
-                '-f', 'bestaudio[protocol*=m3u8]/worst[protocol*=m3u8]/bestaudio/best', '--socket-timeout', '15',
+                '-f', ('bestvideo[height<=720][protocol*=m3u8]/best[height<=720][vcodec!=none][protocol*=m3u8]/bestvideo[height<=720]/best[height<=720][vcodec!=none]' if video else
+                       'bestaudio[protocol*=m3u8]/worst[protocol*=m3u8]/bestaudio/best'), '--socket-timeout', '15',
                 *options, '--', track['url'], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 limit=8_000_000)
             self.extractor = process

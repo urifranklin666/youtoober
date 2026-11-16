@@ -49,7 +49,7 @@ void Card::show() { reset=true; }
 void Card::preview(double now) { reset=true; previewUntil=now+8; }
 
 QImage Card::paint(const Visual &visual, const Options &options, double age, double entrance) const {
-    const int height = options.artwork ? HEIGHT : COMPACT_HEIGHT;
+    const int height = options.artwork ? (options.video ? VIDEO_HEIGHT : HEIGHT) : COMPACT_HEIGHT;
     QImage result(WIDTH,height,QImage::Format_RGBA8888_Premultiplied);
     result.fill(Qt::transparent);
     QPainter p(&result);
@@ -68,9 +68,9 @@ QImage Card::paint(const Visual &visual, const Options &options, double age, dou
     background.setColorAt(0,tint); background.setColorAt(1,QColor(15,17,23,alpha));
     p.setPen(QColor(255,255,255,24)); p.setBrush(background);
     p.drawRoundedRect(body,22,22);
-    const int left=40, content=280, info=options.artwork ? 340 : 44;
+    const int left=40, content=280, info=options.artwork ? (options.video ? 218 : 340) : 44;
     if (options.artwork) {
-        const QRectF tile(left,32,content,content);
+        const QRectF tile(left,32,content,options.video ? 158 : content);
         p.setPen(Qt::NoPen);
         for (int ring=12;ring>=1;ring--) {
             p.setBrush(QColor(0,0,0,3));
@@ -78,12 +78,19 @@ QImage Card::paint(const Visual &visual, const Options &options, double age, dou
         }
         QPainterPath clip; clip.addRoundedRect(tile,14,14);
         p.save(); p.setClipPath(clip);
-        p.fillRect(tile,accent.darker(220));
-        if (!visual.art.isNull()) {
-            int side=qMin(visual.art.width(),visual.art.height());
-            p.drawImage(tile,visual.art,QRect((visual.art.width()-side)/2,(visual.art.height()-side)/2,side,side));
+        p.fillRect(tile,options.video ? QColor(7,8,12) : accent.darker(220));
+        const QImage &picture = options.video && !visual.video.isNull() ? visual.video : visual.art;
+        if (!picture.isNull()) {
+            if (options.video) {
+                QSizeF fitted=picture.size(); fitted.scale(tile.size(),Qt::KeepAspectRatio);
+                QRectF destination(tile.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted);
+                p.drawImage(destination,picture);
+            } else {
+                int side=qMin(picture.width(),picture.height());
+                p.drawImage(tile,picture,QRect((picture.width()-side)/2,(picture.height()-side)/2,side,side));
+            }
         } else {
-            p.setPen(Qt::white); p.setFont(QFont(options.font,64));
+            p.setPen(Qt::white); p.setFont(QFont(options.font,options.video ? 42 : 64));
             p.drawText(tile,Qt::AlignCenter,QString::fromUtf8("♫"));
         }
         if (entrance>.08 && entrance<.92) {
@@ -94,7 +101,7 @@ QImage Card::paint(const Visual &visual, const Options &options, double age, dou
             light.setColorAt(1,Qt::transparent); p.fillRect(tile,light);
         }
         p.restore();
-        QLinearGradient highlight(left,32,left+content,312);
+        QLinearGradient highlight(left,32,left+content,tile.bottom());
         highlight.setColorAt(0,QColor(255,255,255,85)); highlight.setColorAt(.45,QColor(255,255,255,18));
         highlight.setColorAt(1,QColor(255,255,255,5));
         p.setBrush(Qt::NoBrush); p.setPen(QPen(highlight,1)); p.drawRoundedRect(tile,14,14);
@@ -148,8 +155,9 @@ QImage Card::paint(const Visual &visual, const Options &options, double age, dou
     return result;
 }
 
-QImage Card::frame(const QJsonObject &input, const QImage &art, bool connected, const Options &o, double now) {
-    const int height=o.artwork ? HEIGHT : COMPACT_HEIGHT;
+QImage Card::frame(const QJsonObject &input, const QImage &art, bool connected, const Options &o, double now, const QImage &video, const QString &videoKey) {
+    lastDisplay=false;
+    const int height=o.artwork ? (o.video ? VIDEO_HEIGHT : HEIGHT) : COMPACT_HEIGHT;
     auto blank=[height](){ QImage image(WIDTH,height,QImage::Format_RGBA8888_Premultiplied); image.fill(Qt::transparent); return image; };
     QJsonObject state=input;
     QImage image=art;
@@ -180,27 +188,31 @@ QImage Card::frame(const QJsonObject &input, const QImage &art, bool connected, 
     auto track=state["track"].toObject();
     if (track.isEmpty()) { visible=false; return blank(); }
     QString key=keyFor(track);
-    QString signature=key+QChar(0x1f)+track["title"].toString()+QChar(0x1f)+track["artist"].toString()+QString::number(image.cacheKey())+QString::number(o.accent.rgba());
+    const bool holding=state["status"].toString()=="Loading";
+    const bool usableVideo=holding ? !current.video.isNull() : o.video && videoKey==key && !video.isNull();
+    QString signature=QString::number(usableVideo)+key+QChar(0x1f)+track["title"].toString()+QChar(0x1f)+track["artist"].toString()+QString::number(image.cacheKey())+QString::number(o.accent.rgba());
     bool newTrack=key!=current.key;
     bool expired=o.briefly && now-entered>=o.displaySeconds+.5 && !preview;
     if (reset || !visible || (newTrack && expired)) {
-        entered=now; previous={}; changed=-100; reset=false;
+        entered=now; previous={}; changed=-100; reset=false; changingTrack=false;
     } else if (signature!=current.signature) {
         previous=current; changed=now;
-        if (newTrack) entered=now;
+        if (newTrack) { entered=now; changingTrack=true; }
     }
     if (signature!=current.signature) {
         current.art=image; current.key=key; current.signature=signature;
         current.accent=artworkAccent(image,o.accent);
     }
+    if (!holding) current.video=usableVideo ? video : QImage{};
     current.state=state;
     visible=true;
     double entrance=o.animated ? qBound(0.0,(now-entered)/qMax(.1,o.duration),1.0) : 1;
     // Track crossfades should not replay the full slide/scale entrance.
-    if (!previous.key.isEmpty()) entrance=1;
+    if (changingTrack) entrance=1;
     double alpha=1;
     if (o.briefly && !preview) alpha=1-smooth((now-entered-o.displaySeconds)/.5);
     if (alpha<=0) return blank();
+    lastDisplay=true;
     QImage card=paint(current,o,now-entered,entrance);
     double blend=o.animated ? smooth((now-changed)/.55) : 1;
     if (!previous.key.isEmpty() && blend<1) {

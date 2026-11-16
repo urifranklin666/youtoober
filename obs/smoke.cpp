@@ -11,6 +11,8 @@
 #include <QJsonObject>
 #include <QThread>
 #include <QImage>
+#include <QBuffer>
+#include <QPainter>
 #include <unistd.h>
 static QWidget *dock = nullptr;
 extern "C" bool obs_frontend_add_dock_by_id(const char*,const char*,void *widget) { dock=static_cast<QWidget*>(widget); return true; }
@@ -18,6 +20,9 @@ extern "C" void obs_frontend_remove_dock(const char*) { delete dock; dock=nullpt
 int main(int argc,char **argv) {
     QApplication app(argc,argv);
     if(argc<2) return 1;
+    const bool simulateVideo = argc>3 && QString(argv[3])=="video";
+    const int frameHeight = simulateVideo ? 398 : 520;
+    int videoFrames=0;
     wl_display *display=nullptr;
     if(argc>2) {
         display=wl_display_connect(nullptr);
@@ -31,26 +36,35 @@ int main(int argc,char **argv) {
     if(argc>2) {
         if (!offlinePreview) {
         if(!server.listen(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation)+"/ytmusic-cli-"+QString::number(getuid())+".sock")) return 6;
-        QObject::connect(&server,&QLocalServer::newConnection,&server,[&server](){
+        QObject::connect(&server,&QLocalServer::newConnection,&server,[&server,&videoFrames](){
             auto *socket=server.nextPendingConnection();
-            QObject::connect(socket,&QLocalSocket::readyRead,socket,[socket](){
-                socket->readAll();
-                QJsonObject track{{"title","Midnight in Motion"},{"artist","The Night Session"}};
+            QObject::connect(socket,&QLocalSocket::readyRead,socket,[socket,&videoFrames](){
+                const auto request=QJsonDocument::fromJson(socket->readAll()).object();
+                if (request["method"].toString()=="video-frame") {
+                    QImage image(640,360,QImage::Format_RGB32); image.fill(QColor("#237c65"));
+                    { QPainter p(&image); p.fillRect((videoFrames*13)%520,30,120,300,QColor("#e6c76a")); }
+                    QByteArray bytes; QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly); image.save(&buffer,"JPEG");
+                    QJsonObject result{{"track_id","smoke-track"},{"status","ready"},{"revision",++videoFrames},{"frame",QString::fromLatin1(bytes.toBase64())}};
+                    socket->write(QJsonDocument(QJsonObject{{"id",1},{"result",result}}).toJson(QJsonDocument::Compact)+"\n");
+                    return;
+                }
+                QJsonObject track{{"id","smoke-track"},{"title","Midnight in Motion"},{"artist","The Night Session"}};
                 QJsonObject state{{"status","Playing"},{"track",track},{"duration",240},{"position",87},{"volume",65},{"repeat","off"}};
                 socket->write(QJsonDocument(QJsonObject{{"event","state"},{"state",state}}).toJson(QJsonDocument::Compact)+"\n");
             });
         });
         }
         obs_video_info video={}; video.graphics_module="libobs-opengl"; video.fps_num=30; video.fps_den=1;
-        video.base_width=video.output_width=360; video.base_height=video.output_height=520;
+        video.base_width=video.output_width=360; video.base_height=video.output_height=frameHeight;
         video.output_format=VIDEO_FORMAT_RGBA; video.colorspace=VIDEO_CS_709; video.range=VIDEO_RANGE_FULL;
         if(obs_reset_video(&video)!=OBS_VIDEO_SUCCESS) return 7;
     }
     obs_module_t *module=nullptr;
     if(obs_open_module(&module,argv[1],".")!=MODULE_SUCCESS || !obs_init_module(module)) return 2;
     auto *settings=obs_data_create();
+    if (simulateVideo) obs_data_set_string(settings,"visual_mode","video");
     auto *source=obs_source_create("ytmusic_now_playing","Smoke test",settings,nullptr);
-    if(!source || obs_source_get_width(source)!=360 || obs_source_get_height(source)!=520 || !dock) return 3;
+    if(!source || obs_source_get_width(source)!=360 || obs_source_get_height(source)!=uint32_t(frameHeight) || !dock) return 3;
     auto *props=obs_source_properties(source);
     if(!obs_properties_get(props,"paused") || !obs_properties_get(props,"accent") || !obs_properties_get(props,"preview") || !obs_properties_get(props,"display_mode")) return 4;
     if (offlinePreview) obs_property_button_clicked(obs_properties_get(props,"preview"),nullptr);
@@ -66,16 +80,16 @@ int main(int argc,char **argv) {
         app.processEvents();
         obs_enter_graphics();
         auto *target=gs_texrender_create(GS_RGBA,GS_ZS_NONE);
-        if(!gs_texrender_begin(target,360,520)) return 8;
+        if(!gs_texrender_begin(target,360,frameHeight)) return 8;
         vec4 clear={}; gs_clear(GS_CLEAR_COLOR,&clear,0,0);
-        gs_ortho(0,360,0,520,-100,100);
+        gs_ortho(0,360,0,frameHeight,-100,100);
         obs_source_video_render(source);
         gs_texrender_end(target);
-        auto *stage=gs_stagesurface_create(360,520,GS_RGBA);
+        auto *stage=gs_stagesurface_create(360,frameHeight,GS_RGBA);
         gs_stage_texture(stage,gs_texrender_get_texture(target));
         uint8_t *pixels=nullptr; uint32_t stride=0;
         if(!gs_stagesurface_map(stage,&pixels,&stride)) return 9;
-        QImage image(pixels,360,520,stride,QImage::Format_RGBA8888_Premultiplied);
+        QImage image(pixels,360,frameHeight,stride,QImage::Format_RGBA8888_Premultiplied);
         QString filename = frame == 12 ? QString(argv[2]) : QString(argv[2])+QString("-%1.png").arg(frame,2,10,QChar('0'));
         bool saved=image.save(filename);
         if (frame == 12) {
@@ -91,6 +105,7 @@ int main(int argc,char **argv) {
         QThread::msleep(85);
         }
     }
+    if (simulateVideo && videoFrames==0) return 12;
     obs_set_output_source(0,nullptr);
     obs_source_dec_showing(source);
     obs_source_release(source);

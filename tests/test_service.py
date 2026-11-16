@@ -59,6 +59,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             if event['state']['queue']:
                 break
         self.assertEqual(len(event['state']['queue']),1)
+        video=await self.rpc('video-frame',{'after':-1})
+        self.assertEqual(video['result']['frame'],'')
+        self.assertNotIn('video', (await self.rpc('status'))['result'])
         invalid=await self.rpc('status',version=999)
         self.assertEqual(invalid['id'],123)
         self.assertIn('error',invalid)

@@ -1,5 +1,7 @@
 #include "overlay.hpp"
 #include <chrono>
+#include <atomic>
+#include <QPointer>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <graphics/graphics.h>
@@ -32,6 +34,9 @@ MODULE_EXPORT const char *obs_module_description(void) { return "YouTube Music t
 struct Shared {
     QJsonObject state;
     QImage artwork;
+    QImage video;
+    QString videoTrack;
+    double videoAt = -100;
     bool connected = false;
 };
 static std::mutex guard;
@@ -39,6 +44,13 @@ static Shared shared;
 static QWidget *dock = nullptr;
 static QLocalSocket *subscription = nullptr;
 static QTimer *timer = nullptr;
+static QTimer *videoTimer = nullptr;
+static QLabel *videoLabel = nullptr;
+static std::atomic<double> videoDemand{-100};
+static QPointer<QLocalSocket> videoRequest;
+static qint64 videoAfter = -1;
+static double videoBackoff = -100;
+static double clockSeconds();
 static QLabel *statusLabel = nullptr;
 static QLabel *trackLabel = nullptr;
 static QListWidget *queueWidget = nullptr;
@@ -58,6 +70,9 @@ static void setDisconnected() {
     shared.connected = false;
     shared.state = {};
     shared.artwork = {};
+    shared.video = {};
+    shared.videoTrack.clear();
+    videoAfter = -1;
 }
 static void command(const QString &method, QJsonObject params = {}) {
     auto *socket = new QLocalSocket(dock);
@@ -73,6 +88,46 @@ static void command(const QString &method, QJsonObject params = {}) {
         auto response = QJsonDocument::fromJson(socket->readLine()).object();
         if (response.contains("error")) statusLabel->setText(response["error"].toObject()["message"].toString());
         socket->deleteLater();
+    });
+    socket->connectToServer(socketPath());
+}
+static void pollVideo() {
+    const double now = clockSeconds();
+    if (stopping || videoRequest || now-videoDemand.load() > 1 || now < videoBackoff) return;
+    auto *socket = new QLocalSocket(dock);
+    videoRequest = socket;
+    auto *timeout = new QTimer(socket); timeout->setSingleShot(true); timeout->start(2000);
+    auto finish = [socket]() { if (videoRequest == socket) videoRequest.clear(); socket->deleteLater(); };
+    QObject::connect(timeout,&QTimer::timeout,dock,finish);
+    QObject::connect(socket,&QLocalSocket::errorOccurred,dock,[finish](QLocalSocket::LocalSocketError){finish();});
+    QObject::connect(socket,&QLocalSocket::connected,dock,[socket](){
+        socket->write(QJsonDocument(QJsonObject{{"version",1},{"id",1},{"method","video-frame"},{"params",QJsonObject{{"after",videoAfter}}}}).toJson(QJsonDocument::Compact)+"\n");
+    });
+    QObject::connect(socket,&QLocalSocket::readyRead,dock,[socket,finish](){
+        if (!socket->canReadLine()) return;
+        const auto message = QJsonDocument::fromJson(socket->readLine()).object();
+        if (message.contains("error")) {
+            videoBackoff = clockSeconds()+5;
+            videoLabel->setText("Video unavailable — restart the player service to load video support");
+            finish(); return;
+        }
+        const auto result = message["result"].toObject();
+        const QString key = result["track_id"].toString();
+        const QString status = result["status"].toString();
+        QImage image;
+        if (!result["frame"].toString().isEmpty()) image = QImage::fromData(QByteArray::fromBase64(result["frame"].toString().toLatin1()),"JPEG");
+        {
+            std::lock_guard<std::mutex> lock(guard);
+            if (key == shared.state["track"].toObject()["id"].toString()) {
+                videoAfter = result["revision"].toVariant().toLongLong();
+                if (status != "ready") shared.video = {};
+                else if (!image.isNull()) shared.video = image;
+                shared.videoTrack = key;
+                shared.videoAt = clockSeconds();
+            } else videoAfter = -1;
+        }
+        videoLabel->setText(status == "ready" ? "Video connected · silent" : status == "unavailable" ? "Video unavailable · showing artwork" : "Video loading · showing artwork");
+        finish();
     });
     socket->connectToServer(socketPath());
 }
@@ -144,6 +199,7 @@ static void update(void *data, obs_data_t *settings) {
     o.accent = QColor(color & 255,(color >> 8) & 255,(color >> 16) & 255);
     o.opacity = int(obs_data_get_int(settings,"opacity"));
     o.artwork = obs_data_get_bool(settings,"artwork");
+    o.video = QString::fromUtf8(obs_data_get_string(settings,"visual_mode")) == "video";
     o.progress = obs_data_get_bool(settings,"progress");
     o.timestamps = obs_data_get_bool(settings,"timestamps");
     o.paused = obs_data_get_bool(settings,"paused");
@@ -159,6 +215,7 @@ static void defaults(obs_data_t *settings) {
     obs_data_set_default_int(settings,"accent",0x7c65ff);
     obs_data_set_default_int(settings,"opacity",94);
     obs_data_set_default_bool(settings,"artwork",true);
+    obs_data_set_default_string(settings,"visual_mode","artwork");
     obs_data_set_default_bool(settings,"progress",true);
     obs_data_set_default_bool(settings,"paused",false);
     obs_data_set_default_bool(settings,"animated",true);
@@ -173,7 +230,10 @@ static obs_properties_t *properties(void *sourceData) {
     obs_properties_add_text(props,"font","Font family",OBS_TEXT_DEFAULT);
     obs_properties_add_color(props,"accent","Accent color");
     obs_properties_add_int_slider(props,"opacity","Background opacity",0,100,1);
-    obs_properties_add_bool(props,"artwork","Show artwork");
+    auto *visualMode = obs_properties_add_list(props,"visual_mode","Visual mode",OBS_COMBO_TYPE_LIST,OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(visualMode,"Album artwork","artwork");
+    obs_property_list_add_string(visualMode,"Music video (up to 720p, silent)","video");
+    obs_properties_add_bool(props,"artwork","Show artwork / video tile");
     obs_properties_add_bool(props,"progress","Show progress");
     obs_properties_add_bool(props,"paused","Keep visible while paused");
     obs_properties_add_bool(props,"animated","Animate entrance and track crossfades");
@@ -211,7 +271,7 @@ static uint32_t width(void*) { return overlay::WIDTH; }
 static uint32_t height(void *data) {
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    return source->options.artwork ? overlay::HEIGHT : overlay::COMPACT_HEIGHT;
+    return source->options.artwork ? (source->options.video ? overlay::VIDEO_HEIGHT : overlay::HEIGHT) : overlay::COMPACT_HEIGHT;
 }
 static void sourceShown(void *data) {
     auto *source = static_cast<Source*>(data);
@@ -223,7 +283,10 @@ static void render(void *data, gs_effect_t*) {
     { std::lock_guard<std::mutex> lock(guard); snapshot = shared; }
     auto *source = static_cast<Source*>(data);
     std::lock_guard<std::mutex> lock(source->mutex);
-    const QImage image = source->card.frame(snapshot.state,snapshot.artwork,snapshot.connected,source->options,clockSeconds());
+    const double now = clockSeconds();
+    const QImage video = now-snapshot.videoAt<1.5 ? snapshot.video : QImage{};
+    const QImage image = source->card.frame(snapshot.state,snapshot.artwork,snapshot.connected,source->options,now,video,snapshot.videoTrack);
+    if (source->options.video && source->options.artwork && source->card.displayed() && snapshot.connected && !source->card.previewing(now)) videoDemand.store(now);
     const uint32_t cardHeight = image.height();
     if (source->texture && gs_texture_get_height(source->texture) != cardHeight) {
         gs_texture_destroy(source->texture);
@@ -263,6 +326,7 @@ bool obs_module_load(void) {
     });
     trackLabel = new QLabel("No song selected"); trackLabel->setTextFormat(Qt::PlainText); trackLabel->setWordWrap(true); layout->addWidget(trackLabel);
     statusLabel = new QLabel("Disconnected — start the player"); statusLabel->setTextFormat(Qt::PlainText); statusLabel->setWordWrap(true); layout->addWidget(statusLabel);
+    videoLabel = new QLabel; videoLabel->setTextFormat(Qt::PlainText); videoLabel->setWordWrap(true); layout->addWidget(videoLabel);
     auto *transport = new QHBoxLayout; layout->addLayout(transport);
     for (auto method : {"previous","pause","resume","next","stop"}) {
         auto *button = new QPushButton(method); transport->addWidget(button);
@@ -315,13 +379,21 @@ bool obs_module_load(void) {
         connectService();
     });
     timer->start(1000); connectService();
+    videoTimer = new QTimer(dock);
+    QObject::connect(videoTimer,&QTimer::timeout,dock,[](){
+        if (clockSeconds()-videoDemand.load() > 1) { videoLabel->clear(); return; }
+        pollVideo();
+    });
+    videoTimer->start(40);
     return true;
 }
 void obs_module_unload(void) {
     stopping = true;
     if (timer) timer->stop();
+    if (videoTimer) videoTimer->stop();
     if (subscription) { subscription->disconnect(); subscription->abort(); }
     setDisconnected();
     if (dock) obs_frontend_remove_dock("ytmusic-controls");
-    dock = nullptr; subscription = nullptr; timer = nullptr;
+    dock = nullptr; subscription = nullptr; timer = nullptr; videoTimer = nullptr; videoLabel = nullptr;
+    videoRequest.clear(); videoDemand.store(-100);
 }

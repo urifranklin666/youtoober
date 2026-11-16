@@ -5,6 +5,7 @@ import os
 import signal
 from .paths import SOCKET, RUNTIME, private_dir
 from .player import Player
+from .video import Video
 
 
 async def request(method, params=None, timeout=60):
@@ -47,6 +48,8 @@ async def serve():
         raise RuntimeError('Player service already running') from None
     SOCKET.unlink(missing_ok=True)
     player = Player()
+    video = Video(player)
+    video_monitor = None
     subscribers = set()
     clients = set()
     stop = asyncio.Event()
@@ -82,6 +85,8 @@ async def serve():
             if method == 'shutdown':
                 stop.set()
                 result = True
+            elif method == 'video-frame':
+                result = video.snapshot(int(params.get('after', -1)))
             elif method in ('status', 'queue'):
                 result = await player.dispatch(method, params)
             elif method in ('search', 'library', 'liked', 'playlist', 'album'):
@@ -135,6 +140,7 @@ async def serve():
         server = await asyncio.start_unix_server(client, SOCKET, limit=8_000_000)
         SOCKET.chmod(0o600)
         publisher = asyncio.create_task(publish())
+        video_monitor = asyncio.create_task(video.run())
         async with server:
             await stop.wait()
             for writer in list(clients):
@@ -145,6 +151,10 @@ async def serve():
             await asyncio.gather(publisher, return_exceptions=True)
         for writer in list(subscribers):
             writer.close()
+        if video_monitor:
+            video_monitor.cancel()
+            await asyncio.gather(video_monitor, return_exceptions=True)
+        await video.close()
         await player.close()
         SOCKET.unlink(missing_ok=True)
         lock.close()

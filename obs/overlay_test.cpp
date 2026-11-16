@@ -58,6 +58,21 @@ int main(int argc,char **argv) {
     check(shortFirst==shortLater,"Short titles must remain still");
     options.artwork=false;
     check(titles.frame(song("short"),{},true,options,17).height()==overlay::COMPACT_HEIGHT,"Compact layout height");
+    options.artwork=true; options.video=true; options.animated=false;
+    QImage videoFrame(640,360,QImage::Format_RGB32); videoFrame.fill(Qt::green);
+    { QPainter p(&videoFrame); p.fillRect(320,0,320,360,Qt::blue); }
+    overlay::Card videoCard;
+    auto withVideo=videoCard.frame(song("video"),red,true,options,0,videoFrame,"video");
+    check(withVideo.height()==overlay::VIDEO_HEIGHT,"Video mode should use the landscape layout");
+    check(withVideo.pixelColor(50,100).green()>200 && withVideo.pixelColor(310,100).blue()>200,"Video must preserve both edges of the 16:9 picture");
+    auto stale=videoCard.frame(song("video"),red,true,options,1,videoFrame,"wrong-track");
+    check(stale.pixelColor(180,100).red()>stale.pixelColor(180,100).green(),"Stale video from another track must fall back to artwork");
+    QImage nextFrame=videoFrame.copy(); nextFrame.fill(Qt::cyan);
+    videoCard.frame(song("video"),red,true,options,2,videoFrame,"video");
+    options.animated=true;
+    auto moving=videoCard.frame(song("video"),red,true,options,3,nextFrame,"video");
+    check(moving.pixelColor(50,100).blue()>200,"Ordinary video frames must not restart artwork crossfades");
+    options.video=false;
     if (argc>1) {
         options.artwork=true; options.animated=true;
         // A code-drawn fixture exercises the real artwork crop, palette and framing.

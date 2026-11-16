@@ -94,6 +94,18 @@ First appearance uses the slide/fade/scale entrance; song changes crossfade the 
 
 The overlay retains the previous visual briefly during song loading so the next song can crossfade smoothly. Stops, errors, and disconnections hide it. No Browser Source or web server is involved.
 
+### Optional music video
+
+In the source's **Properties → Visual mode**, choose **Music video (up to 720p, silent)**. Artwork remains the default. Video mode uses a **360 × 398** card with a 16:9 tile, preserving the whole picture with letterboxing when needed. Hide the tile to use the existing compact layout.
+
+The service resolves the video attached to the exact playing YouTube ID, caps input quality at 720p, and decodes silent frames with FFmpeg. The widget receives up to 24 fps at 640 × 360 over the owner-only Unix socket. Pause freezes the picture; seeking, resuming, and track changes follow the audio player. Seeking uses mpv’s exact-seek mode, and video frames are paced against its reported playback position. The video has no audio output, so your existing OBS audio capture remains the single sound source.
+
+Artwork appears while video loads, stalls, or is unavailable. Some song uploads contain only static cover art; play a music-video URL with `ytm play URL` to select a different upload. The app does not substitute a different recording automatically.
+
+Video processing starts only when a visible source requests it and stops a few seconds after requests cease. It is shared across video-enabled sources. The dock reports whether video is loading, connected, or unavailable. Temporary stream URLs and HTTP headers stay inside the local service; they are never put in OBS scene settings, normal status snapshots, or the saved queue. Preview mode does not start video extraction.
+
+FFmpeg must be on PATH for video mode. After installing this update, restart OBS and the player service (`ytm service stop`, then `ytm service start`) when convenient. Restarting the player restores its session paused; use Resume to continue.
+
 The dock has **Start player**, previous/pause/resume/next/stop, seeking, volume, shuffle/repeat, and queue editing. Double-click a queued track to play it. Multiple sources share one connection. The source and dock reconnect automatically when the service restarts.
 
 Audio uses normal OBS desktop or application capture. The plugin does not capture or duplicate audio. Add/select the appropriate audio capture source in your scene and check the mixer before recording. Closing OBS or switching scenes leaves playback running.
@@ -102,7 +114,7 @@ Local previews: `build/overlay-polished.webp` (entrance), `build/overlay-crossfa
 
 ## Installation from a checkout
 
-Linux requirements: Python 3.11+, mpv 0.38+, yt-dlp, CMake, a C++17 compiler, OBS development libraries, Qt6 Widgets/Network/Concurrent, and Wayland development libraries for the test harness. The native plugin targets OBS 33 and Qt 6.
+Linux requirements: Python 3.11+, mpv 0.38+, yt-dlp, FFmpeg (for video), CMake, a C++17 compiler, OBS development libraries, Qt6 Widgets/Network/Concurrent, and Wayland development libraries for the test harness. The native plugin targets OBS 33 and Qt 6.
 
 ```sh
 python3 -m venv .venv
@@ -142,7 +154,7 @@ QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion 
   build/obs/ytmusic-obs-smoke "$PWD/build/obs/ytmusic-obs.so"
 ```
 
-Tests cover queue editing, shuffle/repeat, EOF advancement, restoration, failure recovery, cancellation, real mpv IPC with silent output, simultaneous service clients, state subscriptions, protocol errors, permissions, shutdown, and the headless Textual UI. The deterministic Qt renderer test covers palette fallback, crossfades, loading/disconnection behavior, two-line title overflow, timestamp formatting, timed visibility, compact layout, and offline preview. The native smoke harness loads the plugin into libobs and checks source properties and dock lifecycle. Pass `preview` after its output PNG argument to exercise the actual properties preview button with no service connected.
+Tests cover queue editing, shuffle/repeat, EOF advancement, restoration, failure recovery, cancellation, real mpv IPC with silent output, simultaneous service clients, state subscriptions, protocol errors, permissions, shutdown, and the headless Textual UI. The deterministic Qt renderer test covers palette fallback, crossfades, loading/disconnection behavior, two-line title overflow, timestamp formatting, timed visibility, compact layout, offline preview, and 16:9 video framing/stale-frame fallback. The video tests cover real silent decoding, pause/seek behavior, track changes, idle cleanup, quality limits, bounded retries, and private frame responses. The native smoke harness loads the plugin into libobs and checks source properties and dock lifecycle. Pass `preview` after its output PNG argument to exercise the actual properties preview button with no service connected.
 
 To generate a rendered native preview on a Wayland desktop, use a separate runtime directory so the harness cannot collide with the real player socket:
 
@@ -153,6 +165,8 @@ Validation covers public catalog search, real HLS streaming through silent mpv o
 Personal-library and final scene/audio acceptance require your own authenticated session. A plugin load/render test is separate from checking an actual recording in your OBS scene collection.
 
 ## Local protocol
+
+`video-frame` is an on-demand frame request with optional `after` revision. Its result contains `track_id`, `status` (`idle`, `loading`, `ready`, or `unavailable`), `revision`, `fps`, and an optional base64 JPEG `frame`. It never returns a resolved media URL or authentication headers.
 
 The service listens at `$XDG_RUNTIME_DIR/ytmusic-cli-UID.sock`, with mode 0600, and uses a singleton file lock. It has no TCP listener. Requests are newline-delimited JSON:
 

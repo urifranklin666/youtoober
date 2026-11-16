@@ -254,7 +254,7 @@ class Player:
             if self.duration:
                 value = min(value, self.duration)
             if self.loaded:
-                await self.backend.command('seek', value, 'absolute')
+                await self.backend.command('seek', value, 'absolute+exact')
             self.position = value
         elif method == 'volume':
             self.volume = max(0, min(100, float(params['value'])))
